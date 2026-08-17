@@ -1,0 +1,94 @@
+function config = optimised_tlm_interface_config()
+%OPTIMISED_TLM_INTERFACE_CONFIG Shared settings for the optimised TLM interface.
+%
+% Both initialise_optimised_tlm_interface.m and
+% heaviside_line_equivalent_optimise.m read this file so the Simulink
+% interface and the analysis script use the same optimisation setup.
+
+[cosimParams, ~, ~] = unitlm_transmission_line_config();
+configDir = fileparts(mfilename('fullpath'));
+
+config.cosimParams = cosimParams;
+config.sampleTime = cosimParams.sampleTime;
+config.communicationSteps = cosimParams.batchSteps;
+config.fixedDelay = config.sampleTime*config.communicationSteps;
+
+config.modelName = 'Microgrid';
+config.transformerPath = [config.modelName, '/T_vsc_66kV_0p38kV'];
+
+%% Symmetric LCL equivalent sampling
+
+config.lineRemainder.fMin = 1;
+config.lineRemainder.fMax = 1e5;
+config.lineRemainder.nFrequency = 100;
+config.lineRemainder.frequency = logspace( ...
+    log10(config.lineRemainder.fMin), ...
+    log10(config.lineRemainder.fMax), ...
+    config.lineRemainder.nFrequency).';
+config.lineRemainder.frequencyWeight = ...
+    ones(config.lineRemainder.nFrequency, 1);
+
+% Retained for compatibility with older result files and scripts. The
+% current symmetric-LCL construction is deterministic and does not use a
+% nonlinear multi-start optimiser.
+config.lineRemainder.numberOfStarts = 10;
+config.lineRemainder.randomSeed = 43;
+config.lineRemainder.randomPerturbationStd = 1.5;
+
+config.lineRemainder.maxIterations = 500;
+config.lineRemainder.maxFunctionEvaluations = 2e5;
+config.lineRemainder.functionTolerance = 1e-12;
+config.lineRemainder.stepTolerance = 1e-12;
+config.lineRemainder.optimalityTolerance = 1e-10;
+config.lineRemainder.finiteDifferenceType = 'central';
+
+config.lineRemainder.lineFirst = true;
+config.lineRemainder.directDelayFirst = true;
+
+%% Frequency-dependent interface filter fitting
+
+config.filter.fMin = 1;
+config.filter.fMax = 1e4;
+config.filter.nFrequency = 1600;
+config.filter.frequency = logspace( ...
+    log10(config.filter.fMin), ...
+    log10(config.filter.fMax), ...
+    config.filter.nFrequency).';
+
+% Full Zc orders. Keep denominator order larger than the numerator order
+% because the LCTLM model now uses line_bZc/line_aZc directly as Zc in ohms.
+config.filter.orderZcNum = 6;
+config.filter.orderZcDen = 7;
+
+% Legacy residual-Zr orders, retained only so older saved result files can
+% still be inspected. The current LCTLM path fits full Zc directly.
+config.filter.orderZrNum = 5;
+config.filter.orderZrDen = 6;
+
+config.filter.orderHrNum = 4;
+config.filter.orderHrDen = 5;
+
+% The symmetric lumped LCL two-port does not have a natural 100 us
+% propagation phase at high frequency. Fit Hr in the control-relevant band
+% and let the strictly-proper residual filter roll off above it.
+config.filter.hrFitMaxFrequency = 1e4;
+
+config.filter.lowFrequencyWeight = 10;
+config.filter.relativeWeightZc = false;
+config.filter.relativeWeightHr = true;
+config.filter.relativeWeightFloor = 1e-1;
+config.filter.iterationsZc = 3000;
+config.filter.iterationsZr = 2000;
+config.filter.iterationsHr = 4000;
+config.filter.discretisationMethod = 'zoh';
+
+config.filter.makePlot = true;
+config.filter.saveFile = fullfile( ...
+    configDir, ...
+    'optimised_frequency_dependent_line_filters.mat');
+
+%% Script-only display controls
+
+config.analysis.display = 'off';
+config.analysis.makePlot = true;
+end

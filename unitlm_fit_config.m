@@ -1,0 +1,38 @@
+function fit = unitlm_fit_config()
+%UNITLM_FIT_CONFIG Shared rational-fitting settings for non-Heaviside TLM.
+%
+% Tune these values with fit_non_heaviside_line_rational.m, then run the
+% Simulink models. initialize_unitlm_microgrid.m uses the same values.
+
+%% Frequency grid
+
+fit.fMin = 10;              % Hz
+fit.fMax = 2e5;             % Hz, must stay below 1/(2*sampleTime)
+fit.nFrequency = 1000;
+
+%% Rational fitting orders
+
+fit.orderZcNum = 3;
+fit.orderZcDen = 4;
+
+% A 5th-order Hr fit can become active for some short-delay cases. The
+% 4th-order fit is the current stable default for the co-simulation.
+fit.orderHr = 5;
+
+%% invfreqs settings
+
+fit.iterations = 100;
+
+% For the Zc residual fit, this is interpreted as a fraction of Zinf.
+% The initializer converts it to ohms because Zr is fitted as Zr_ohm.
+fit.weightFloorZc = 0.1;
+fit.weightFloorHr = 0.2;
+
+%% Discrete implementation settings
+
+fit.discretizationMethod = 'zoh';
+
+% Only used by the standalone fitting/inspection script.
+fit.nFirZr = 5;
+fit.nFirHr = 5;
+end

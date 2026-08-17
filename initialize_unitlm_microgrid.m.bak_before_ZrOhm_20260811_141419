@@ -1,0 +1,459 @@
+function initialize_unitlm_microgrid(varargin)
+%INITIALIZE_UNITLM_MICROGRID Shared initialization for uniTLM microgrid models.
+%
+% This function replaces the duplicated InitFcn bodies in
+% Microgrid_uniTLM_server.slx and Microgrid_uniTLM_client.slx.
+% It assigns calculated parameters to the base workspace because the
+% Simulink blocks evaluate their mask and block parameters there.
+
+skipLineFit = any(strcmpi(varargin, 'skipLineFit'));
+
+% Preserve the previous InitFcn behavior of starting from a clean base workspace.
+evalin('base', 'clear');
+clc;
+
+%% =========================================================
+%  Complete Model Initialization
+% ==========================================================
+
+
+%% 1. Co-simulation environment initialization
+
+setup_two_pc_cosim();
+
+% Clear persistent variables inside the TCP S-functions
+clear Server_co Client_co Server_co_TLM Client_co_TLM
+
+% Refresh MATLAB function and path cache
+rehash;
+
+% Release TCP ports potentially occupied by a previous simulation
+release_two_pc_tcp_ports();
+
+
+%% 2. Communication parameters
+
+[params, DPL, lineConfig] = unitlm_transmission_line_config();
+
+%% 3. Distributed transmission-line parameters
+
+Scale = DPL.delayLengthScale;
+
+
+%% 4. Electrical system parameters
+
+Vline = 690;                         % Rated line-line RMS voltage on LV side, V
+Vdc   = 1350;                        % DC-link voltage, V
+P     = 5e6;                         % Rated active power, W
+Sxfmr = 6.3e6;                       % Export-transformer rating, VA
+Vhv   = 66e3;                        % Export-line voltage, V
+f     = 50;                          % Rated frequency, Hz
+Wb    = 2*pi*f;                      % Rated angular frequency, rad/s
+fsw1  = 10e3;                        % Inverter switching frequency, Hz
+
+Vac = sqrt(2)*Vline/sqrt(3);         % Phase-neutral voltage peak, V
+
+
+%% 5. Per-unit base values
+
+Vp = Vac;
+Ip = 2*P/(3*Vp);
+
+Zb = Vp/Ip;
+Lb = Zb/Wb;
+Cb = 1/(Wb*Zb);
+
+
+%% 6. Network parameters
+
+% Preserve the original 380 V / 10 kW model impedances in per-unit while
+% moving the physical base to the MW-class converter side.
+Vline_ref = 380;
+P_ref     = 10e3;
+Vp_ref    = sqrt(2)*Vline_ref/sqrt(3);
+Ip_ref    = 2*P_ref/(3*Vp_ref);
+Zb_ref    = Vp_ref/Ip_ref;
+Lb_ref    = Zb_ref/Wb;
+Cb_ref    = 1/(Wb*Zb_ref);
+
+Rline_pu = 0.1/Zb_ref;
+Lline_pu = 2e-3/Lb_ref;
+
+R1_pu = Rline_pu; R1 = R1_pu*Zb;
+R2_pu = Rline_pu; R2 = R2_pu*Zb;
+R3_pu = Rline_pu; R3 = R3_pu*Zb;
+R4_pu = Rline_pu; R4 = R4_pu*Zb;
+
+L1_pu = Lline_pu; L1 = L1_pu*Lb;
+L2_pu = Lline_pu; L2 = L2_pu*Lb;
+L3_pu = Lline_pu; L3 = L3_pu*Lb;
+L4_pu = Lline_pu; L4 = L4_pu*Lb;
+
+
+%% 7. Load parameters
+
+Rload1 = Vp/Ip;
+Rload2 = Vp/Ip;
+Rload3 = Vp/Ip;
+
+Rload1_pu = Rload1/Zb;
+Rload2_pu = Rload2/Zb;
+Rload3_pu = Rload3/Zb;
+
+
+%% 8. Low-voltage filter and virtual impedance parameters
+
+% Rv_pu = 0.05;
+% Xv_pu = 0.2;
+Rv_pu = 0.1;
+Xv_pu = 0.3;
+Rf_pu       = 0.1/Zb_ref;
+Lc_pu       = 2.5e-3/Lb_ref;
+Lf2_pu      = 0.85e-3/Lb_ref;
+Cf_pu       = 20e-6/Cb_ref;
+Rbreaker_pu = 0.01/Zb_ref;
+Ron_pu      = 0.1/Zb_ref;
+
+Rf       = Rf_pu*Zb;
+Rdamp    = Rf;
+Lc       = Lc_pu*Lb;
+Lf2      = Lf2_pu*Lb;
+Cf       = Cf_pu*Cb;
+Rbreaker = Rbreaker_pu*Zb;
+RonVSC   = Ron_pu*Zb;
+
+% Soft synchronization / precharge closing parameters.
+softClose_prechargeStart = 0.20;     % s
+softClose_minPrechargeTime = 0.20;   % s, longer pre-flux time for right-end HV-side switching
+softClose_maxPrechargeTime = 0.50;   % s
+softClose_vTolPu = 0.10;             % pu of line-line RMS voltage
+softClose_angleTolDeg = 12;          % deg
+softClose_vBaseRms = Vhv;            % line-line RMS voltage at the 66 kV breaker, V
+Rpre = 50;                           % HV-side pre-insertion resistor, Ohm/phase
+
+% GFM active/reactive power dispatch. External shunt reactors are disabled;
+% line/filter reactive power is handled by the GFM voltage reference.
+gfm_PrefPu = 1.0;
+gfm_VrefPu = 0.93;
+gfm_PcmdSlewPuPerSec = 3;
+gfm_VloopKp = 0.08;
+gfm_VloopKi = 120;
+gfm_AngleKp = 1.2;
+gfm_AngleKi = 3;
+
+% External 66 kV shunt-reactor compensation is disabled.
+QlineCharging = Wb*DPL.C(1)*DPL.originalLength*Vhv^2;
+QfilterCapPerBranch = Wb*Cf*Vline^2;
+QcompensatedFilterBranches = 0;
+QfilterCapTotal = 0;
+QcompTotal = 0;
+QcompPerEnd = 0;
+LshuntEnd = inf;
+
+if skipLineFit
+    fprintf('\nMicrogrid base initialization ready.\n');
+    fprintf('Non-Heaviside transmission-line IIR fitting skipped.\n\n');
+    exportLocalWorkspaceToBase();
+    return;
+end
+
+%% =========================================================
+%  Non-Heaviside Transmission-Line IIR Initialization
+%  All user-adjustable parameters are placed at the beginning
+% ==========================================================
+
+%% 1. User parameters
+
+% Communication/interface parameters
+Ts_interface = params.sampleTime;       % Interface sample time, s
+line_nDelay  = lineConfig.nDelay;       % Explicit delay samples
+lineDelay    = lineConfig.delay;
+
+% Positive-sequence per-unit-length parameters
+line_R = lineConfig.R;                  % Ohm/km
+line_L = lineConfig.L;                  % H/km
+line_C = lineConfig.C;                  % F/km
+line_G = lineConfig.G;                  % S/km
+
+% Fitting frequency range
+fitConfig = unitlm_fit_config();
+fit_fMin       = fitConfig.fMin;        % Hz
+fit_fMax       = fitConfig.fMax;        % Hz
+fit_nFrequency = fitConfig.nFrequency;
+
+% Rational fitting orders
+orderZcNum = fitConfig.orderZcNum;
+orderZcDen = fitConfig.orderZcDen;
+fit_orderHr = fitConfig.orderHr;
+
+% Maximum invfreqs iterations
+fit_iterations = fitConfig.iterations;
+
+% Relative-error weighting limits
+fit_weightFloorZc = fitConfig.weightFloorZc;
+fit_weightFloorHr = fitConfig.weightFloorHr;
+
+% Discretization method
+fit_discretizationMethod = fitConfig.discretizationMethod;
+
+
+%% 2. Parameter checks
+
+if line_R < 0 || line_G < 0
+    error('line_R and line_G must be nonnegative.');
+end
+
+if line_L <= 0 || line_C <= 0
+    error('line_L and line_C must be positive.');
+end
+
+if Ts_interface <= 0
+    error('Ts_interface must be positive.');
+end
+
+if line_nDelay < 1 || line_nDelay ~= round(line_nDelay)
+    error('line_nDelay must be a positive integer.');
+end
+
+fs_interface = 1/Ts_interface;
+
+if fit_fMin <= 0 || fit_fMax <= fit_fMin
+    error('The fitting frequency range is invalid.');
+end
+
+if fit_fMax >= fs_interface/2
+    error( ...
+        ['fit_fMax must be below the Nyquist frequency. ' ...
+         'Nyquist frequency = %.6g Hz.'], ...
+        fs_interface/2);
+end
+
+
+%% 3. Delay-equivalent line parameters
+
+% High-frequency propagation velocity
+line_velocityHF = 1/sqrt(line_L*line_C);     % km/s
+
+% Line length represented by the communication delay
+line_length = lineDelay*line_velocityHF;     % km
+
+% High-frequency characteristic impedance
+line_Zinf = sqrt(line_L/line_C);             % Ohm
+Z_inf = line_Zinf;
+
+
+%% 4. Exact frequency responses
+
+fit_f = logspace( ...
+    log10(fit_fMin), ...
+    log10(fit_fMax), ...
+    fit_nFrequency).';
+
+fit_w = 2*pi*fit_f;
+fit_s = 1j*fit_w;
+
+gammaExact = sqrt( ...
+    (line_R + fit_s*line_L) .* ...
+    (line_G + fit_s*line_C));
+
+ZcExact = sqrt( ...
+    (line_R + fit_s*line_L) ./ ...
+    (line_G + fit_s*line_C));
+
+HExact = exp(-gammaExact*line_length);
+
+% Separate the explicit communication delay:
+%
+% H(s) = exp(-s*lineDelay) Hr(s)
+HrExact = HExact .* exp(fit_s*lineDelay);
+
+
+%% 5. Frequency normalization
+
+fit_wScale = sqrt(fit_w(1)*fit_w(end));
+fit_wNormalized = fit_w/fit_wScale;
+
+
+%% 6. Fit characteristic-impedance residual
+
+% Zc(s) = Zinf [1 + Zr(s)]
+ZrExact = ZcExact/line_Zinf - 1;
+
+weightZr = 1 ./ max( ...
+    abs(ZrExact), ...
+    fit_weightFloorZc);
+
+[bZr_q, aZr_q] = invfreqs( ...
+    ZrExact, ...
+    fit_wNormalized, ...
+    orderZcNum, ...
+    orderZcDen, ...
+    weightZr, ...
+    fit_iterations);
+
+Zr_q = tf(bZr_q, aZr_q);
+
+
+%% 7. Fit residual propagation function
+
+weightHr = 1 ./ max( ...
+    abs(HrExact), ...
+    fit_weightFloorHr);
+
+[bHr_q, aHr_q] = invfreqs( ...
+    HrExact, ...
+    fit_wNormalized, ...
+    fit_orderHr, ...
+    fit_orderHr, ...
+    weightHr, ...
+    fit_iterations);
+
+Hr_q = tf(bHr_q, aHr_q);
+
+
+%% 8. Convert normalized q-domain models to s-domain
+%
+% q = s/fit_wScale
+
+[AqZr, BqZr, CqZr, DqZr] = ssdata(ss(Zr_q));
+[AqHr, BqHr, CqHr, DqHr] = ssdata(ss(Hr_q));
+
+Zr_s = ss( ...
+    fit_wScale*AqZr, ...
+    fit_wScale*BqZr, ...
+    CqZr, ...
+    DqZr);
+
+Hr_s = ss( ...
+    fit_wScale*AqHr, ...
+    fit_wScale*BqHr, ...
+    CqHr, ...
+    DqHr);
+
+if ~isstable(Zr_s)
+    error('The fitted continuous Zr model is unstable.');
+end
+
+if ~isstable(Hr_s)
+    error('The fitted continuous Hr model is unstable.');
+end
+
+
+%% 9. Discretize fitted models
+
+Zr_z = c2d( ...
+    Zr_s, ...
+    Ts_interface, ...
+    fit_discretizationMethod);
+
+Hr_z = c2d( ...
+    Hr_s, ...
+    Ts_interface, ...
+    fit_discretizationMethod);
+
+
+%% 10. Construct complete characteristic impedance
+
+unity_z = ss([], [], [], 1, Ts_interface);
+
+% Zc(z) = Zinf [1 + Zr(z)]
+Zc_z = line_Zinf*(unity_z + Zr_z);
+
+
+%% 11. Extract IIR coefficients
+
+% The Fitted_Characteristic_Impedance subsystems multiply their inputs
+% by Z_inf. Use the normalized residual Zr(z) here. The remote path
+% adds the direct Z_inf term explicitly; the local path leaves the
+% direct Z_inf term in the physical R branch, avoiding a signal-level
+% algebraic loop through the controlled voltage sources.
+[line_bZc, line_aZc] = tfdata(tf(Zr_z), 'v');
+[line_bHr, line_aHr] = tfdata(tf(Hr_z), 'v');
+
+% Normalize denominator leading coefficients
+line_bZc = line_bZc/line_aZc(1);
+line_aZc = line_aZc/line_aZc(1);
+
+line_bHr = line_bHr/line_aHr(1);
+line_aHr = line_aHr/line_aHr(1);
+
+% Remove negligible numerical imaginary parts
+line_bZc = real(line_bZc);
+line_aZc = real(line_aZc);
+
+% Zr is fitted as strictly proper. Remove tiny numerical feedthrough
+% so Simulink does not report a direct local current-to-voltage path.
+if ~isempty(line_bZc) && abs(line_bZc(1)) < 1e-10
+    line_bZc(1) = 0;
+end
+
+line_bHr = real(line_bHr);
+line_aHr = real(line_aHr);
+
+
+
+%% 12. Final stability checks
+
+if ~isstable(Zc_z)
+    error('The discrete Zc IIR model is unstable.');
+end
+
+if ~isstable(Hr_z)
+    error('The discrete Hr IIR model is unstable.');
+end
+
+line_ZcPoles = pole(Zc_z);
+line_HrPoles = pole(Hr_z);
+
+line_HrPassivityFrequencies = logspace( ...
+    log10(fit_fMin), ...
+    log10(0.45*fs_interface), ...
+    4000).';
+
+line_HrPassivityResponse = squeeze(freqresp( ...
+    Hr_z, ...
+    2*pi*line_HrPassivityFrequencies));
+
+line_HrMaxMagnitude = max(abs(line_HrPassivityResponse));
+line_HrPassivityTolerance = 1e-3;
+
+if line_HrMaxMagnitude > 1 + line_HrPassivityTolerance
+    error( ...
+        ['The fitted discrete Hr model is active: max|Hr(z)| = %.6g. ', ...
+         'Reduce fit_orderHr or fit_fMax before running the TLM co-simulation.'], ...
+        line_HrMaxMagnitude);
+end
+
+clear line_HrPassivityFrequencies line_HrPassivityResponse
+
+
+%% 13. Display key results
+
+fprintf('\nNon-Heaviside transmission-line IIR initialization\n');
+fprintf('--------------------------------------------------\n');
+fprintf('Interface sample time:       %.6e s\n', Ts_interface);
+fprintf('Explicit delay samples:      %d\n', line_nDelay);
+fprintf('Explicit delay:              %.6e s\n', lineDelay);
+fprintf('High-frequency velocity:     %.6e km/s\n', line_velocityHF);
+fprintf('Delay-equivalent length:     %.6f km\n', line_length);
+fprintf('High-frequency Zc:           %.6f Ohm\n', line_Zinf);
+fprintf('Maximum Zc pole magnitude:   %.6f\n', max(abs(line_ZcPoles)));
+fprintf('Maximum Hr pole magnitude:   %.6f\n', max(abs(line_HrPoles)));
+fprintf('Maximum Hr fitted magnitude: %.6f\n\n', line_HrMaxMagnitude);
+
+exportLocalWorkspaceToBase();
+end
+
+function exportLocalWorkspaceToBase()
+vars = evalin('caller', 'whos');
+
+for k = 1:numel(vars)
+    name = vars(k).name;
+
+    if strcmp(name, 'ans')
+        continue;
+    end
+
+    assignin('base', name, evalin('caller', name));
+end
+end
