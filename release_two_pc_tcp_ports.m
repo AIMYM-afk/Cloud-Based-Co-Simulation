@@ -1,8 +1,10 @@
 function release_two_pc_tcp_ports()
 %RELEASE_TWO_PC_TCP_PORTS Close stale tcpip objects for the co-simulation ports.
 
-ports = [30010, 30011];
-fprintf('Releasing MATLAB tcpip objects on ports 30010 and 30011...\n');
+network = cosim_network_config();
+ports = [network.serverToClientPort, network.clientToServerPort];
+fprintf('Releasing MATLAB tcpip objects on ports %d and %d...\n', ...
+    ports(1), ports(2));
 
 try
     objs = instrfindall('Type', 'tcpip');

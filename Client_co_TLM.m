@@ -356,18 +356,19 @@ for k = 1:numel(requiredFields)
     end
 end
 
-params.serverIp = '100.72.6.122';
-params.listenAddress = '0.0.0.0';
+network = cosim_network_config();
+params.serverIp = network.serverIp;
+params.listenAddress = network.listenAddress;
 
 % Shared parameters from model initialization
 params.sampleTime = baseParams.sampleTime;
 params.n          = baseParams.n;
 params.batchSteps = baseParams.batchSteps;
 
-params.timeoutSeconds = 30;
-params.clientToServerPort = 30011;
-params.serverToClientPort = 30010;
-params.bufferSize = 20000;
+params.timeoutSeconds = network.timeoutSeconds;
+params.clientToServerPort = network.clientToServerPort;
+params.serverToClientPort = network.serverToClientPort;
+params.bufferSize = network.tlmBufferSize;
 
 params.initialOutput = 0;
 

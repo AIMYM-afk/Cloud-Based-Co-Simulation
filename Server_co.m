@@ -110,16 +110,17 @@ end
 
 function params = loadServerParameters()
 % BEGIN AUTO COSIM PARAMETERS
-params.serverIp = '100.72.6.122';
-params.listenAddress = '0.0.0.0';
+network = cosim_network_config();
+params.serverIp = network.serverIp;
+params.listenAddress = network.listenAddress;
 params.baseSampleTime = 5e-7;
 params.batchSteps = 100;
 params.sampleTime = params.batchSteps*params.baseSampleTime;
 params.n = 3;
-params.timeoutSeconds = 30;
-params.clientToServerPort = 30011;
-params.serverToClientPort = 30010;
-params.bufferSize = 10000;
+params.timeoutSeconds = network.timeoutSeconds;
+params.clientToServerPort = network.clientToServerPort;
+params.serverToClientPort = network.serverToClientPort;
+params.bufferSize = network.itmBufferSize;
 % END AUTO COSIM PARAMETERS
 params.waveformFolderName = 'itm_waveforms';
 params.ports = [params.clientToServerPort, params.serverToClientPort];

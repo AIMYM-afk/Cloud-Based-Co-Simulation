@@ -1,0 +1,23 @@
+# Simulink generated files
+slprj/
+**/slprj/
+*.slxc
+*.autosave
+*.asv
+*.m~
+
+# Local backups
+*.bak
+*.bak_*
+*before_*
+
+# Simulation output
+result/*
+!result/README.md
+tlm_waveforms/
+itm_waveforms/
+examples/waveforms/comparison_figures*/
+
+# MATLAB crash and temporary files
+matlab_crash_dump.*
+*.tmp
